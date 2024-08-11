@@ -114,34 +114,38 @@ def rsi_signal(symbol):
         return 'down'
     return 'none'
 
-max_pos = 50    # Max current orders
+max_pos = 20    # Max current orders
 symbols = get_tickers()     # getting all symbols from the Bybit Derivatives
 
 while True:
-    balance = get_balance()
-    if balance is None:
+    balance = get_balance()  # Get the current wallet balance
+    if balance is None:  # If balance is None, there's an issue connecting to the API
         print('Cannot connect to API')
     else:
-        print(f'Balance: {balance}')
-        pos = get_positions()
-        print(f'You have {len(pos)} positions: {pos}')
+        print(f'Balance: {balance}')  # Print the balance
+        pos = get_positions()  # Get the current open positions
+        print(f'You have {len(pos)} positions: {pos}')  # Print the number of open positions
 
+        # Loop through symbols only if the number of positions is less than max_pos
         if len(pos) < max_pos:
             for elem in symbols:
-                pos = get_positions()
-                if len(pos) >= max_pos:
-                    break
-                signal = rsi_signal(elem)
+                pos = get_positions()  # Re-check the number of open positions
+                if len(pos) >= max_pos:  # If max positions reached, stop opening new positions
+                    print(f'Maximum positions reached: {len(pos)}')
+                    break  # Exit the loop to prevent opening more positions
+
+                signal = rsi_signal(elem)  # Get trading signal for the symbol
                 if signal == 'up':
                     print(f'Found BUY signal for {elem}')
                     sleep(2)
                     place_order_market(elem, 'buy')
                     sleep(5)
-                if signal == 'down':
+                elif signal == 'down':
                     print(f'Found SELL signal for {elem}')
                     sleep(2)
                     place_order_market(elem, 'sell')
                     sleep(5)
-        get_pnl
+
+        get_pnl()  # Print the profit and loss (PnL) summary
     print('Waiting 2 mins')
-    sleep(120)
+    sleep(120)  # Pause for 2 minutes before the next iteration
