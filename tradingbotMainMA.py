@@ -121,7 +121,12 @@ def place_order_market(symbol, side):
         return
 
     order_qty = round(qty / current_price, qty_precision)
-
+       # Get 24-hour volume for the symbol
+    tickers = get_tickers()  # Fetch the updated list of tickers
+    volume = next((vol for sym, vol in tickers if sym == symbol), None)
+    if volume:
+        print(f"24-hour volume for {symbol}: {volume} USDT")
+        
     try:
         resp = session.place_order(
             category='linear',
