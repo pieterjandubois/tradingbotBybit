@@ -218,8 +218,14 @@ def main_trading_logic():
     tickers = get_tickers()  # Get available trading pairs sorted by volume
     symbols = [sym for sym, _ in tickers]
     pos = get_positions()  # Get the current open positions
-    print(f'Balance: {balance}')
-    print(f'You have {len(pos)} positions: {", ".join(pos.keys())}')
+    
+    # Create a dictionary to map symbols to their 24-hour volume
+    volume_dict = {sym: vol for sym, vol in tickers}
+    
+    # Only print the number of positions, the symbols, and their 24-hour volume
+    position_info = [(symbol, volume_dict.get(symbol, 'N/A')) for symbol in pos.keys()]
+    for symbol, volume in position_info:
+        print(f'{symbol}: 24h Volume = {volume} USDT')
     
     # If the number of positions is less than max_pos, place new trades
     if len(pos) < max_pos:
@@ -255,6 +261,7 @@ def main_trading_logic():
             
     # Get and print PnL summary
     get_pnl()
+
 
 # Main loop
 last_update_time = time()
