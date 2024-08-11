@@ -12,16 +12,14 @@ session = HTTP(
 )
 
 # Parameters
-tp_pct = 0.02  # Take profit percentage = 2%
+tp_pct = 0.025   # Take profit percentage = 2.5%
+sl_pct = 0.0025  # Stop loss percentage = 0.25%
 deviation_threshold = 0.03  # Deviation threshold = 3%
-sl_pct = 0.0325  # Stop loss percentage = 3.25%
 timeframe = '60'  # 1-hour timeframe
-moving_avg_period = 90  # 90-day moving average period
-mode = 1  # 1 = isolated, 2 = cross margin mode
-leverage = 10
-qty = 500  # Quantity in USDT
+moving_avg_period = 90  # 90-period moving average
 max_pos = 30  # Maximum number of positions to hold
 update_interval = 15 * 60  # 15 minutes in seconds
+qty = 500  # Quantity in USDT
 
 def get_balance():
     """Get wallet balance"""
@@ -37,7 +35,6 @@ def get_tickers():
     try:
         resp = session.get_tickers(category="linear")['result']['list']
         symbols = [elem for elem in resp if 'USDT' in elem['symbol'] and not 'USDC' in elem['symbol']]
-        # Sort symbols by trading volume (in descending order)
         symbols = sorted(symbols, key=lambda x: float(x['volume24h']), reverse=True)
         return [(elem['symbol'], float(elem['volume24h'])) for elem in symbols]
     except Exception as err:
@@ -47,26 +44,14 @@ def get_tickers():
 def klines(symbol, interval, limit=500):
     """Fetch historical price data"""
     try:
-        resp = session.get_kline(
-            category='linear',
-            symbol=symbol,
-            interval=interval,
-            limit=limit
-        )['result']['list']
-        
-        # Convert the response into a DataFrame
+        resp = session.get_kline(category='linear', symbol=symbol, interval=interval, limit=limit)['result']['list']
         df = pd.DataFrame(resp, columns=['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Turnover'])
-        
-        # Ensure 'Time' is numeric and convert to datetime
         df['Time'] = pd.to_numeric(df['Time'], errors='coerce')
         df = df.dropna(subset=['Time'])
-        
-        if df['Time'].empty:
-            return pd.DataFrame()
-
+        if df.empty:
+            return df
         df['Time'] = pd.to_datetime(df['Time'], unit='ms')
-        df = df.set_index('Time')
-        df = df.astype(float)[::-1]  # Reverse DataFrame
+        df = df.set_index('Time').astype(float)[::-1]
         return df
     except Exception as err:
         print(f"Error fetching historical data for {symbol}: {err}")
@@ -74,24 +59,17 @@ def klines(symbol, interval, limit=500):
 
 def calculate_moving_average(df, period):
     """Calculate moving average"""
-    if 'Close' in df.columns:
-        df['SMA'] = ta.trend.sma_indicator(df['Close'], window=period)
-        return df
-    else:
-        print("Error: 'Close' column is missing in DataFrame")
-        return df
+    df['SMA'] = ta.trend.sma_indicator(df['Close'], window=period)
+    return df
 
 def check_deviation(df):
-    """Check if current price deviates more than 3% from moving average"""
+    """Check if current price deviates more than threshold from moving average"""
     if df.empty or len(df) < moving_avg_period:
         return None
     current_price = df['Close'].iloc[-1]
     moving_avg = df['SMA'].iloc[-1]
     deviation = (current_price - moving_avg) / moving_avg
-
-    if abs(deviation) > deviation_threshold:
-        return 'sell' if deviation > 0 else 'buy'
-    return None
+    return 'sell' if deviation > deviation_threshold else 'buy' if deviation < -deviation_threshold else None
 
 def get_positions():
     """Get current open positions"""
@@ -101,7 +79,7 @@ def get_positions():
     except Exception as err:
         print(f"Error getting positions: {err}")
         return {}
-    
+
 def get_pnl():
     """Get profit and loss summary"""
     try:
@@ -123,29 +101,27 @@ def get_precisions(symbol):
         return 0, 0
 
 def place_order_market(symbol, side):
-    """Place a market order"""
+    """Place a market order with fixed TP and SL"""
     df = klines(symbol, timeframe)
     if df.empty:
         print(f"No data for {symbol}")
         return
     
-    df = calculate_moving_average(df, moving_avg_period)
     current_price = df['Close'].iloc[-1]
-    moving_avg = df['SMA'].iloc[-1]
-
     price_precision, qty_precision = get_precisions(symbol)
     
-    # Calculate dynamic take profit and stop loss
-    tp_price = round(moving_avg * (1 + tp_pct) if side == 'buy' else moving_avg * (1 - tp_pct), price_precision)
-    sl_price = round(current_price * (1 - sl_pct) if side == 'buy' else current_price * (1 + sl_pct), price_precision)
+    if side == 'buy':
+        tp_price = round(current_price * (1 + tp_pct), price_precision)
+        sl_price = round(current_price * (1 - sl_pct), price_precision)
+    elif side == 'sell':
+        tp_price = round(current_price * (1 - tp_pct), price_precision)
+        sl_price = round(current_price * (1 + sl_pct), price_precision)
+    else:
+        print("Invalid side provided. Must be 'buy' or 'sell'.")
+        return
+
     order_qty = round(qty / current_price, qty_precision)
 
-    # Get 24-hour volume for the symbol
-    tickers = get_tickers()  # Fetch the updated list of tickers
-    volume = next((vol for sym, vol in tickers if sym == symbol), None)
-    if volume:
-        print(f"24-hour volume for {symbol}: {volume} USDT")
-    
     try:
         resp = session.place_order(
             category='linear',
@@ -162,36 +138,24 @@ def place_order_market(symbol, side):
     except Exception as err:
         print(f"Error placing order for {symbol}: {err}")
 
-def update_tp_sl():
-    """Update TP and SL for all positions"""
-    pos = get_positions()
-    for symbol in pos:
-        print(f"Updating TP/SL for position: {symbol}")
-        close_position(symbol)
-
 def close_position(symbol):
     """Close the position for the given symbol"""
-    try:
-        pos = get_positions()
-        if symbol in pos:
-            side = 'buy' if pos[symbol]['side'] == 'Sell' else 'sell'
-            df = klines(symbol, timeframe)
-            if df.empty:
-                print(f"No data for {symbol}")
-                return
-            
-            df = calculate_moving_average(df, moving_avg_period)
-            current_price = df['Close'].iloc[-1]
-            moving_avg = df['SMA'].iloc[-1]
-            
-            price_precision, qty_precision = get_precisions(symbol)
-            mark_price = float(session.get_tickers(category='linear', symbol=symbol)['result']['list'][0]['markPrice'])
-            order_qty = pos[symbol]['size']
-            
-            # Calculate dynamic take profit and stop loss
-            tp_price = round(moving_avg * (1 + tp_pct) if side == 'buy' else moving_avg * (1 - tp_pct), price_precision)
-            sl_price = round(current_price * (1 - sl_pct) if side == 'buy' else current_price * (1 + sl_pct), price_precision)
-            
+    pos = get_positions()
+    if symbol in pos:
+        side = 'buy' if pos[symbol]['side'] == 'Sell' else 'sell'
+        df = klines(symbol, timeframe)
+        if df.empty:
+            print(f"No data for {symbol}")
+            return
+        
+        current_price = df['Close'].iloc[-1]
+        price_precision, qty_precision = get_precisions(symbol)
+        order_qty = pos[symbol]['size']
+        
+        tp_price = round(current_price * (1 + tp_pct) if side == 'buy' else current_price * (1 - tp_pct), price_precision)
+        sl_price = round(current_price * (1 - sl_pct) if side == 'buy' else current_price * (1 + sl_pct), price_precision)
+        
+        try:
             resp = session.place_order(
                 category='linear',
                 symbol=symbol,
@@ -204,30 +168,26 @@ def close_position(symbol):
                 slTriggerBy='LastPrice'
             )
             print(f"Position close response: {resp}")
-    except Exception as err:
-        print(f"Error closing position for {symbol}: {err}")
+        except Exception as err:
+            print(f"Error closing position for {symbol}: {err}")
 
 def main_trading_logic():
     """Main trading logic"""
-    balance = get_balance()  # Get the current wallet balance
-    if balance is None:  # If balance is None, there's an issue connecting to the API
+    balance = get_balance()
+    if balance is None:
         print('Cannot connect to API')
-        sleep(300)  # Wait 5 minutes before retrying
+        sleep(300)
         return
     
-    tickers = get_tickers()  # Get available trading pairs sorted by volume
+    tickers = get_tickers()
     symbols = [sym for sym, _ in tickers]
-    pos = get_positions()  # Get the current open positions
+    pos = get_positions()
     
-    # Create a dictionary to map symbols to their 24-hour volume
-    volume_dict = {sym: vol for sym, vol in tickers}
-    
-    # Only print the number of positions, the symbols, and their 24-hour volume
-    position_info = [(symbol, volume_dict.get(symbol, 'N/A')) for symbol in pos.keys()]
+    # Print current positions and their 24-hour volume
+    position_info = [(symbol, next((vol for sym, vol in tickers if sym == symbol), 'N/A')) for symbol in pos.keys()]
     for symbol, volume in position_info:
         print(f'{symbol}: 24h Volume = {volume} USDT')
     
-    # If the number of positions is less than max_pos, place new trades
     if len(pos) < max_pos:
         available_positions = max_pos - len(pos)
         for symbol in symbols[:available_positions]:
@@ -243,9 +203,8 @@ def main_trading_logic():
                     
                     print(f"Signal detected for {symbol}: {signal}")
                     place_order_market(symbol, signal)
-                    sleep(5)  # Wait before placing the next order
+                    sleep(5)
     
-    # Manage open positions
     pos = get_positions()
     for symbol in pos:
         df = klines(symbol, timeframe)
@@ -258,21 +217,14 @@ def main_trading_logic():
                 if signal == 'sell' and current_price <= moving_avg:
                     close_position(symbol)
                     print(f"Position closed for {symbol} as price reached moving average")
-            
-    # Get and print PnL summary
+    
     get_pnl()
-
 
 # Main loop
 last_update_time = time()
 while True:
     main_trading_logic()
-    
-    # Update TP/SL every 15 minutes
     current_time = time()
     if current_time - last_update_time >= update_interval:
-        update_tp_sl()
         last_update_time = current_time
-    
-    # Wait before the next iteration
-    sleep(30)  # Wait for 30 seconds before the next loop iteration
+    sleep(30)
