@@ -13,14 +13,14 @@ session = HTTP(
 
 # Parameters
 tp_pct = 0.02  # Take profit percentage = 2%
-sl_pct = 0.025  # Stop loss percentage = 2.5% deviation from moving average
+deviation_threshold = 0.03  # Deviation threshold = 3%
+sl_pct = 0.0325  # Stop loss percentage = 3.25%
 timeframe = '60'  # 1-hour timeframe
 moving_avg_period = 90  # 90-day moving average period
-deviation_threshold = 0.02  # 2% deviation
 mode = 1  # 1 = isolated, 2 = cross margin mode
 leverage = 10
 qty = 500  # Quantity in USDT
-max_pos = 20  # Maximum number of positions to hold
+max_pos = 30  # Maximum number of positions to hold
 update_interval = 15 * 60  # 15 minutes in seconds
 
 def get_balance():
@@ -33,11 +33,13 @@ def get_balance():
         return None
 
 def get_tickers():
-    """Get available trading pairs"""
+    """Get available trading pairs and their volumes"""
     try:
         resp = session.get_tickers(category="linear")['result']['list']
-        symbols = [elem['symbol'] for elem in resp if 'USDT' in elem['symbol'] and not 'USDC' in elem['symbol']]
-        return symbols
+        symbols = [elem for elem in resp if 'USDT' in elem['symbol'] and not 'USDC' in elem['symbol']]
+        # Sort symbols by trading volume (in descending order)
+        symbols = sorted(symbols, key=lambda x: float(x['volume24h']), reverse=True)
+        return [(elem['symbol'], float(elem['volume24h'])) for elem in symbols]
     except Exception as err:
         print(f"Error getting tickers: {err}")
         return []
@@ -80,7 +82,7 @@ def calculate_moving_average(df, period):
         return df
 
 def check_deviation(df):
-    """Check if current price deviates more than 2% from moving average"""
+    """Check if current price deviates more than 3% from moving average"""
     if df.empty or len(df) < moving_avg_period:
         return None
     current_price = df['Close'].iloc[-1]
@@ -134,9 +136,15 @@ def place_order_market(symbol, side):
     price_precision, qty_precision = get_precisions(symbol)
     
     # Calculate dynamic take profit and stop loss
-    tp_price = round(current_price * (1 + tp_pct) if side == 'buy' else current_price * (1 - tp_pct), price_precision)
+    tp_price = round(moving_avg * (1 + tp_pct) if side == 'buy' else moving_avg * (1 - tp_pct), price_precision)
     sl_price = round(current_price * (1 - sl_pct) if side == 'buy' else current_price * (1 + sl_pct), price_precision)
     order_qty = round(qty / current_price, qty_precision)
+
+    # Get 24-hour volume for the symbol
+    tickers = get_tickers()  # Fetch the updated list of tickers
+    volume = next((vol for sym, vol in tickers if sym == symbol), None)
+    if volume:
+        print(f"24-hour volume for {symbol}: {volume} USDT")
     
     try:
         resp = session.place_order(
@@ -181,7 +189,7 @@ def close_position(symbol):
             order_qty = pos[symbol]['size']
             
             # Calculate dynamic take profit and stop loss
-            tp_price = round(current_price * (1 + tp_pct) if side == 'buy' else current_price * (1 - tp_pct), price_precision)
+            tp_price = round(moving_avg * (1 + tp_pct) if side == 'buy' else moving_avg * (1 - tp_pct), price_precision)
             sl_price = round(current_price * (1 - sl_pct) if side == 'buy' else current_price * (1 + sl_pct), price_precision)
             
             resp = session.place_order(
@@ -207,14 +215,16 @@ def main_trading_logic():
         sleep(300)  # Wait 5 minutes before retrying
         return
     
-    symbols = get_tickers()  # Get available trading pairs
+    tickers = get_tickers()  # Get available trading pairs sorted by volume
+    symbols = [sym for sym, _ in tickers]
     pos = get_positions()  # Get the current open positions
     print(f'Balance: {balance}')
-    print(f'You have {len(pos)} positions: {pos}')
+    print(f'You have {len(pos)} positions: {", ".join(pos.keys())}')
     
-    # Loop through symbols only if the number of positions is less than max_pos
+    # If the number of positions is less than max_pos, place new trades
     if len(pos) < max_pos:
-        for symbol in symbols:
+        available_positions = max_pos - len(pos)
+        for symbol in symbols[:available_positions]:
             df = klines(symbol, timeframe)
             if not df.empty:
                 df = calculate_moving_average(df, moving_avg_period)

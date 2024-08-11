@@ -1,0 +1,2 @@
+api = "aWSlniU8sKYwVCt41p"
+secret = "oGt8B6Bt83I24iJDVJEWI9A2vXDDLOM3ywOq"
